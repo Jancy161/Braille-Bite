@@ -34,6 +34,7 @@ By integrating these features, the system enhances **accessibility, independence
 - **Voice Processing**: Text-to-Speech (TTS), Speech-to-Text (STT)
 - **Backend**: Firebase / REST API
 - **Platform**: Android Studio
+- **Programming language**: Dart
 
 ---
 
