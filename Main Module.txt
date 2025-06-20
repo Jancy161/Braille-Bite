@@ -1,0 +1,304 @@
+
+import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:firebase_auth/firebase_auth.dart';
+
+import '../main.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  runApp(MaterialApp(home: VoiceFoodOrdering()));
+}
+
+class VoiceFoodOrdering extends StatefulWidget {
+  @override
+  _VoiceFoodOrderingState createState() => _VoiceFoodOrderingState();
+}
+
+class _VoiceFoodOrderingState extends State<VoiceFoodOrdering> {
+  final DatabaseReference _dbRef = FirebaseDatabase.instance.ref('bindadminquestions');
+  final FlutterTts flutterTts = FlutterTts();
+  final stt.SpeechToText _speechToText = stt.SpeechToText();
+
+  List<Map<String, dynamic>> foodData = [];
+  int currentIndex = 0;
+  String spokenText = '';
+  bool isListening = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  void _loadData() async {
+    final event = await _dbRef.once();
+    final snapshot = event.snapshot;
+
+    if (snapshot.exists) {
+      final Map<dynamic, dynamic> rawData = snapshot.value as Map;
+      final List<Map<String, dynamic>> items = [];
+
+      rawData.forEach((key, value) {
+        final item = Map<String, dynamic>.from(value);
+        items.add(item);
+      });
+
+      setState(() {
+        foodData = items;
+      });
+
+      _speakOptions();
+    }
+  }
+
+
+
+  Future<void> _speakOptions() async {
+    if (currentIndex >= foodData.length) {
+      await flutterTts.speak("All items read. Thank you.");
+      return;
+    }
+
+    final current = foodData[currentIndex];
+    final options = Map<String, dynamic>.from(current['options']);
+
+    String toSpeak = options.values.join(", ");
+    await flutterTts.awaitSpeakCompletion(true);
+    await flutterTts.speak("Available items are: $toSpeak");
+
+    Future.delayed(Duration(seconds: 2), _startListening);
+  }
+
+  void _startListening() async {
+    bool available = await _speechToText.initialize(
+      onStatus: (status) => print('Speech status: $status'),
+      onError: (error) => print('Speech error: $error'),
+    );
+
+    if (available) {
+      setState(() => isListening = true);
+
+      _speechToText.listen(onResult: (result) {
+        setState(() {
+          spokenText = result.recognizedWords;
+        });
+
+        if (result.finalResult) {
+          _speechToText.stop();
+          setState(() => isListening = false);
+          _checkAnswer(spokenText);
+        }
+      });
+    }
+  }
+
+
+
+
+  Future<void> _checkAnswer(String input) async {
+    final current = foodData[currentIndex];
+    final options = Map<String, dynamic>.from(current['options']);
+    final correctKey = current['correctAnswer'];
+    final correctValue = options[correctKey]?.toString().toLowerCase().trim();
+
+    final userAnswer = input.toLowerCase().trim();
+
+    if (userAnswer == correctValue) {
+      await flutterTts.speak("Correct. You selected $userAnswer.");
+    } else {
+      await flutterTts.speak("Wrong answer. You said $userAnswer. The correct answer is $correctValue.");
+    }
+
+    Future.delayed(Duration(seconds: 3), () {
+      setState(() {
+        currentIndex++;
+        spokenText = '';
+      });
+      _speakOptions();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (foodData.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: Text("Voice Food Ordering")),
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final current = foodData[currentIndex];
+    final options = Map<String, dynamic>.from(current['options']);
+
+    return Scaffold(
+      appBar: AppBar(title: Text("Voice Food Ordering")),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            Text("Say your food to order:", style: TextStyle(fontSize: 20)),
+            SizedBox(height: 20),
+            ...options.values.map((val) => Text(val, style: TextStyle(fontSize: 18))),
+            SizedBox(height: 30),
+            Text("You said: $spokenText", style: TextStyle(fontSize: 18)),
+            SizedBox(height: 20),
+            if (!isListening)
+              ElevatedButton(
+                onPressed: _startListening,
+                child: Text("Repeat Listening"),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/material.dart';
+
+import '../main.dart';
+import '../user/home.dart';
+import '../user/userlogin.dart';
+
+
+class AuthService {
+  Future<void> createUsers(Map<String, String> data, BuildContext context) async {
+    try {
+      final credential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: data['email']!,
+        password: data['password']!,
+      );
+
+      DatabaseReference _database = FirebaseDatabase.instance.reference();
+      User? user = FirebaseAuth.instance.currentUser;
+      String? userId = user?.uid;
+
+      if (userId != null) {
+        await _database.child('blinduser').child(userId).set({
+          'email': data['email'],
+          'password': data['password'],
+          'name': data['name'],
+          'contact': data['contact'],
+          'Address': data['Address'],
+          'ukey': userId,
+          'status': "request",
+        });
+
+        await sendVerificationEmail();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Registered Successfully')),
+        );
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => LoginPage()),
+        );
+      }
+    } catch (e) {
+      showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: Text("Sign Up Failed"),
+            content: Text(e.toString()),
+          );
+        },
+      );
+    }
+  }
+
+  Future<void> userlogin(Map<String, String> data, BuildContext context) async {
+    try {
+      final credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: data['email']!,
+        password: data['password']!,
+      );
+
+      User? user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await user.reload();
+        user = FirebaseAuth.instance.currentUser;
+        if (user!.emailVerified) {
+          DatabaseReference _database = FirebaseDatabase.instance.reference();
+          String? userId = user.uid;
+
+          DatabaseReference databaseReference = _database.child('blinduser').child(userId);
+
+          DatabaseEvent event = await databaseReference.once();
+          var userData = event.snapshot.value;
+
+          if (userData is Map) {
+            Map<String, dynamic> userDataMap = Map<String, dynamic>.from(userData);
+
+            String? name = userDataMap['name'];
+            String? email = userDataMap['email'];
+            String? contact = userDataMap['contact'];
+            String? Address = userDataMap['Address'];
+            String? ukey = userDataMap['ukey'];
+
+            // ... Extract other necessary fields
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Login Successfully')),
+            );
+
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => VoiceFoodOrdering(
+
+
+              )),
+            );
+          } else {
+            showDialog(
+              context: context,
+              builder: (context) {
+                return AlertDialog(
+                  title: Text("Error"),
+                  content: Text("No user data found."),
+                );
+              },
+            );
+          }
+        } else {
+          showDialog(
+            context: context,
+            builder: (context) {
+              return AlertDialog(
+                title: Text("Email not verified"),
+                content: Text("Please Verify Your Email"),
+              );
+            },
+          );
+        }
+      }
+    } catch (e) {
+      showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: Text("Login Error"),
+            content: Text(e.toString()),
+          );
+        },
+      );
+    }
+  }
+
+  Future<void> sendVerificationEmail() async {
+    User? user = FirebaseAuth.instance.currentUser;
+    if (user != null && !user.emailVerified) {
+      await user.sendEmailVerification();
+      print("Verification email sent to ${user.email}");
+    }
+  }
+}
